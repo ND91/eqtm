@@ -22,7 +22,7 @@
 #' @import ggplot2
 #' @examples 
 
-eqtm <- function(dmrs_gr, gene_col, meth_data, expr_data, meth_anno_gr, cor_method = c("pearson", "kendall", "spearman"), alternative = c("two.sided", "greater", "less"), N = 1000, seed = NULL, ncores = 1){
+eqtm <- function(dmrs_gr, gene_col, meth_data, expr_data, meth_anno_gr, cor_method = c("pearson", "kendall", "spearman"), alternative = c("two.sided", "greater", "less"), N = 1000, iseed = NULL, ncores = 1, verbose = T){
   #Argument checking
   if(is.null(dmrs_gr)) stop("dmr_gr cannot be found")
   if(class(dmrs_gr) != "GRanges") stop("dmr_gr must be a GRanges object")
@@ -37,7 +37,7 @@ eqtm <- function(dmrs_gr, gene_col, meth_data, expr_data, meth_anno_gr, cor_meth
 
   cor_method <- match.arg(cor_method)
   alternative <- match.arg(alternative)
-  seed <- as.numeric(seed)
+  iseed <- as.numeric(iseed)
   ncores <- as.numeric(ncores)
   
   #Subsetting the datasets according to the overlapping genes
@@ -50,7 +50,7 @@ eqtm <- function(dmrs_gr, gene_col, meth_data, expr_data, meth_anno_gr, cor_meth
   dmr_genes_ol <- makeGRangesFromDataFrame(dmr_genes[dmr_genes$geneid %in% ol_genes,], keep.extra.columns = T)
   dmr_genes_ol$index <- names(dmr_genes_ol)
   expr_ol <- expr_data[rownames(expr_data) %in% ol_genes, ol_samples]
-  meth_anno_ol <- meth_anno_gr[unique(subjectHits(findOverlaps(dmrs_ol, meth_anno_gr))),]
+  meth_anno_ol <- meth_anno_gr[unique(subjectHits(findOverlaps(dmr_genes_ol, meth_anno_gr))),]
   meth_bg <- meth_data[, ol_samples]
   
   #Methylation aggregation
@@ -59,11 +59,11 @@ eqtm <- function(dmrs_gr, gene_col, meth_data, expr_data, meth_anno_gr, cor_meth
   
   #Correlation and bootstrapping
   if(verbose) cat(paste0(Sys.time(), " Correlating the DMRs with gene expression.\n"))
-  dmrs_cor <- dmr_correlator(dmrs_se = dmrs_meth, cor_method = cor_method, N = N, ncores = ncores, seed = seed, verbose = T)
+  dmrs_cor <- dmr_correlator(dmrs_se = dmrs_meth, cor_method = cor_method, N = N, ncores = ncores, iseed = iseed, verbose = T)
   
   #Permutation
   if(verbose) cat(paste0(Sys.time(), " Calculating the p-values for the correlation coefficient.\n"))
-  dmrs_data <- dmr_permutations(dmrs_se = dmrs_cor, meth_ol_samples = meth_ol_samples, cor_method = cor_method, N = N, ncores = ncores, alternative = alternative, seed = seed, verbose = T)
+  dmrs_data <- dmr_permutations(dmrs_se = dmrs_cor, meth_bg = meth_bg, meth_anno_gr = meth_anno_ol, cor_method = cor_method, N = N, ncores = ncores, alternative = alternative, iseed = iseed, verbose = T)
   
   return(dmrs_data)
 }
@@ -88,7 +88,7 @@ dmr_aggregator <- function(dmrs_gr, meth_data, meth_anno, expr_data){
   return(agg_dmr_se)
 }
 
-dmr_correlator <- function(dmrs_se, cor_method, N, ncores, seed, verbose){
+dmr_correlator <- function(dmrs_se, cor_method, N, ncores, iseed, verbose){
   expr_entry <- assays(dmrs_se)$expr
   dmr_entry <- assays(dmrs_se)$meth_summarized
   
@@ -96,33 +96,29 @@ dmr_correlator <- function(dmrs_se, cor_method, N, ncores, seed, verbose){
     cor(data[k,1], data[k,2], method = cor_method)
   } 
   
+  bootstrapper <- function(i){
+    boot_obj <- boot::boot(data = cbind(expr_entry[i,], dmr_entry[i,]), 
+                           statistic = cor_boot, 
+                           cor_method = cor_method,
+                           R = N)
+    CI95 <- boot::boot.ci(boot.out = boot_obj, 
+                          type = "bca")
+    return(c(cor_coef = boot_obj$t0, CI95_lower = CI95$bca[4], CI95_upper = CI95$bca[5]))
+  }
+  
   if(verbose) cat(paste0(Sys.time(), "\tPerforming ", N, " bootstraps for the ", cor_method, " correlation coefficient on ", ncores, " core(s).\n"))
   if(ncores == 1){
-    if(!is.null(seed)) set.seed(seed)
+    if(!is.null(iseed)) set.seed(iseed)
     
-    cor_vals <- sapply(seq.int(nrow(expr_entry)), function(i){
-      boot_obj <- boot::boot(data = cbind(expr_entry[i,], dmr_entry[i,]), 
-                             statistic = cor_boot, 
-                             cor_method = cor_method,
-                             R = N)
-      CI95 <- boot::boot.ci(boot.out = boot_obj, 
-                            type = "bca")
-      return(c(cor_coef = boot_obj$t0, CI95_lower = CI95$bca[4], CI95_upper = CI95$bca[5]))
-    })
+    cor_vals <- sapply(X = seq.int(nrow(expr_entry)), FUN = bootstrapper)
   } else{
     cl <- makeCluster(ncores)
-    if(!is.null(seed)) clusterSetRNGStream(cl = cl, iseed = seed)
-    clusterExport(cl = cl, list("expr_entry", "dmr_entry", "cor_boot", "cor_method", "N"))
+    if(!is.null(iseed)) clusterSetRNGStream(cl = cl, iseed = iseed)
     
-    cor_vals <- parSapply(cl = cl, X = seq.int(nrow(expr_entry)), FUN = function(i){
-      boot_obj <- boot::boot(data = cbind(expr_entry[i,], dmr_entry[i,]), 
-                             statistic = cor_boot, 
-                             cor_method = cor_method,
-                             R = N)
-      CI95 <- boot::boot.ci(boot.out = boot_obj, 
-                            type = "bca")
-      return(c(cor_coef = boot_obj$t0, CI95_lower = CI95$bca[4], CI95_upper = CI95$bca[5]))
-    })
+    #BUG: Sometimes clusterExport cannot find "expr_entry" in the environment
+    clusterExport(cl = cl, varlist = list("expr_entry", "dmr_entry", "cor_boot", "cor_method", "N"), envir = environment())
+    
+    cor_vals <- parSapply(cl = cl, X = seq.int(nrow(expr_entry)), FUN = bootstrapper)
     stopCluster(cl)
   }
   if(verbose) cat(paste0(Sys.time(), "\tFinished bootstrapping.\n"))
@@ -133,10 +129,9 @@ dmr_correlator <- function(dmrs_se, cor_method, N, ncores, seed, verbose){
   return(dmrs_se)
 }
 
-dmr_permutations <- function(dmrs_se, meth_bg, meth_anno_gr, cor_method, N, ncores, seed, verbose, alternative){
+dmr_permutations <- function(dmrs_se, meth_bg, meth_anno_gr, cor_method, N, ncores, iseed, verbose, alternative){
   #Find the number of CpGs
-  #TODO: What if a DMR is not found in the meth_anno_ol? 
-  ncpgs <- as.numeric(table(queryHits(findOverlaps(dmrs_se, meth_anno_ol))))
+  ncpgs <- as.numeric(table(queryHits(findOverlaps(dmrs_se, meth_anno_gr))))
   if(length(ncpgs) != nrow(dmrs_se)) stop("Some DMRs cannot be found in the provided annotation file.")
   mcols(dmrs_se)$nCpGs <- ncpgs
   
@@ -156,7 +151,8 @@ dmr_permutations <- function(dmrs_se, meth_bg, meth_anno_gr, cor_method, N, ncor
     null_chrom <- lapply(ncpgs, function(ncpg, bg_cpgs_chrom, N){
       eff_bg <- nrow(bg_cpgs_chrom)-ncpg
       
-      start_nulls <- sample(x = eff_bg, size = N)
+      #The -1 is to offset the total such that the actual correlation can still be included. A p-value cannot be 0.
+      start_nulls <- sample(x = eff_bg, size = N-1)
       
       null_agg <- t(sapply(start_nulls, function(start_null, ncpg, bg_cpgs_chrom){
         end_null <- start_null+ncpg-1
@@ -173,7 +169,7 @@ dmr_permutations <- function(dmrs_se, meth_bg, meth_anno_gr, cor_method, N, ncor
   }, ncpgs_chrom = ncpgs_chrom, meth_bg_split = meth_bg_split, N = N)
   names(ran_dist) <- names(ncpgs_chrom)
   
-  if(verbose) cat(paste0(Sys.time(), "\tCalculating the null distribution DMRs.\n"))
+  if(verbose) cat(paste0(Sys.time(), "\tGenerating the null distribution and calculating the p-values.\n"))
   
   nd_generator <- function(iterator, dmrs_chrom_df, randmrs_chrom_df, expr_data, cor_method, alternative){
     #Helper function to correlate the gene expression with the randomly generated DMRs methylation and calculate the p-value
@@ -204,14 +200,14 @@ dmr_permutations <- function(dmrs_se, meth_bg, meth_anno_gr, cor_method, N, ncor
     expr_data <- assays(dmrs_se)$expr
     
     if(ncores == 1){
-      if(!is.null(seed)) set.seed(seed)
+      if(!is.null(iseed)) set.seed(iseed)
       pvals_chrom <- foreach(j = 1:nrow(dmrs_chrom_df), .combine = "c") %do% {
         nd_generator(iterator = j, dmrs_chrom_df = dmrs_chrom_df, expr_data = expr_data, randmrs_chrom_df = randmrs_chrom_df, cor_method = cor_method)
       }
     } else{
       cl <- makeCluster(ncores)
-      if(!is.null(seed)) clusterSetRNGStream(cl = cl, iseed = seed)
-      clusterExport(cl, list("nd_generator", "dmrs_chrom_df", "expr_data", "randmrs_chrom_df", "cor_method", "alternative"))
+      if(!is.null(iseed)) clusterSetRNGStream(cl = cl, iseed = iseed)
+      clusterExport(cl = cl, varlist = list("nd_generator", "dmrs_chrom_df", "expr_data", "randmrs_chrom_df", "cor_method", "alternative"), envir = environment())
       registerDoParallel(cl)
       
       pvals_chrom <- foreach(j = 1:nrow(dmrs_chrom_df), .combine = "c") %dopar% {
@@ -229,7 +225,7 @@ dmr_permutations <- function(dmrs_se, meth_bg, meth_anno_gr, cor_method, N, ncor
   return(dmrs_se)
 }
 
-topcor <- function(dmrs_se, sort.by = c("pval", "cor_coef"), volcanoplot = T){
+topcor <- function(dmrs_se, sort.by = c("pval", "cor_coef", "CI95_diff"), volcanoplot = T){
   sort.by <- match.arg(sort.by)
   
   eqtms_df <- data.frame(rowRanges(dmrs_se))
@@ -238,7 +234,8 @@ topcor <- function(dmrs_se, sort.by = c("pval", "cor_coef"), volcanoplot = T){
   eqtms_df <- eqtms_df[order(eqtms_df$nCpGs, decreasing = T), ]
   switch(sort.by,
          pval = eqtms_df <- eqtms_df[order(eqtms_df$pval),],
-         cor = eqtms_df <- eqtms_df[order(abs(eqtms_df$cor_coef)),])
+         cor = eqtms_df <- eqtms_df[order(abs(eqtms_df$cor_coef)),],
+         CI95_diff = eqtms_df <- eqtms_df[order(abs(eqtms_df$CI95_upper - eqtms_df$CI95_lower), decreasing = F),])
   
   if(volcanoplot){
     print(ggplot(eqtms_df, aes(x = cor_coef, y = -log10(pval))) +
