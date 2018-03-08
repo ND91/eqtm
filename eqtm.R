@@ -6,12 +6,16 @@
 #' @param meth_data A matrix whose row names contain CpG identifiers and whose values represent the methylation signal. The column names must contain the columns names of the gene expression data.
 #' @param expr_data A matrix whose row names contain gene identifiers and whose values represent the expression signal. The column names must contain the columns names of the methylation data.
 #' @param meth_anno_gr A GenomicRanges-derived object where the ranges represent the coordinates of the assayed CpGs and whose rownames contain an identifier.
-#' @param cor_type Type of correlation ("Pearson", or "Spearman").
-#' @param N The number of bootstraps and permutations for calculating the 95% confidence intervals and p-values respectively (defaults to 1000).
+#' @param cor_type Type of correlation ("pearson", "kendall", "spearman").
+#' @param alternative Alternative hypothesis to be used for calculating the p-values ("two.sided", "greater", "less").
+#' @param N The number of bootstraps and permutations for calculating the 95% confidence intervals and p-values respectively (default: 1000).
+#' @param ncores The number of cores to use for bootstrapping and permutations (default: 1)
+#' @param iseed A seed for the bootstrapping and permutations for reproducibility
+#' @param verbose A boolean whether the printed output should be verbose (default: T)
 #' 
 #' @author Andrew Y.F. Li Yim
 #' 
-#' @return 
+#' @return A SummarizedExperiment object containing the location of the summarized methylation and gene expression data for the overlapping samples. 
 #' @keywords eqtm, methylation, expression
 #' @export
 #' @import GenomicRanges
@@ -19,10 +23,9 @@
 #' @import boot
 #' @import doParallel
 #' @import foreach
-#' @import ggplot2
 #' @examples 
 
-eqtm <- function(dmrs_gr, gene_col, meth_data, expr_data, meth_anno_gr, cor_method = c("pearson", "kendall", "spearman"), alternative = c("two.sided", "greater", "less"), N = 1000, iseed = NULL, ncores = 1, verbose = T){
+eqtm <- function(dmrs_gr, gene_col, meth_data, expr_data, meth_anno_gr, cor_method = c("pearson", "kendall", "spearman"), alternative = c("two.sided", "greater", "less"), N = 1000, ncores = 1, iseed = NULL, verbose = T){
   #Argument checking
   if(is.null(dmrs_gr)) stop("dmr_gr cannot be found")
   if(class(dmrs_gr) != "GRanges") stop("dmr_gr must be a GRanges object")
@@ -223,26 +226,4 @@ dmr_permutations <- function(dmrs_se, meth_bg, meth_anno_gr, cor_method, N, ncor
   mcols(dmrs_se)$pval <- dmrs_chrom[match(mcols(dmrs_se)$index, dmrs_chrom$index),]$pval
   
   return(dmrs_se)
-}
-
-topcor <- function(dmrs_se, sort.by = c("pval", "cor_coef", "CI95_diff"), volcanoplot = T){
-  sort.by <- match.arg(sort.by)
-  
-  eqtms_df <- data.frame(rowRanges(dmrs_se))
-  
-  #Sort by number of CpGs
-  eqtms_df <- eqtms_df[order(eqtms_df$nCpGs, decreasing = T), ]
-  switch(sort.by,
-         pval = eqtms_df <- eqtms_df[order(eqtms_df$pval),],
-         cor = eqtms_df <- eqtms_df[order(abs(eqtms_df$cor_coef)),],
-         CI95_diff = eqtms_df <- eqtms_df[order(abs(eqtms_df$CI95_upper - eqtms_df$CI95_lower), decreasing = F),])
-  
-  if(volcanoplot){
-    print(ggplot(eqtms_df, aes(x = cor_coef, y = -log10(pval))) +
-      geom_point() +
-      theme_bw() +
-      xlim(-1,1))
-  }
-  
-  return(eqtms_df)
 }
