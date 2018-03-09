@@ -16,32 +16,25 @@
 #' @import Gviz
 #' @import biomaRt
 #' @import NDlib
-#' @import cowplot
+#' @import gridExtra
 #' @examples 
 
 plot_eqtm <- function(dmrs_se, meth_data, meth_groups, anno_gr, expr_data, expr_groups, united_groups, bm, index, colors = NULL){
-  if(is.null(meth_data)) meth_data <- assays(eqtms)$meth_summarized
-  if(is.null(expr_data)) expr_data <- assays(eqtms)$expr
+  if(is.null(meth_data)) meth_data <- assays(dmrs_se)$meth_summarized
+  if(is.null(expr_data)) expr_data <- assays(dmrs_se)$expr
   
   dmr_se <- dmrs_se[which(mcols(dmrs_se)$index == index),]
   dmr_gr <- rowRanges(dmr_se)
   
-  genome_plot(dmr_gr = dmr_gr, bm = bm)
-  topplot <- recordPlot()
-  dmr_plot(dmr_gr = dmr_gr, anno_gr = anno_gr, meth_groups = meth_groups, color = gg_color_hue(meth_groups), flanks = NULL, genome_version = "hg19", title = NULL)
-  bottomleft <- recordPlot()
-  bottommid <- NDlib::transcript_strip_plot(id = dmr_gr$geneid, counts = expr_data, factor_interest = expr_groups, type = "SE", legend = F)
-  bottomright <- cor_plot(dmr_se = dmr_se, united_groups = united_groups)
+  topplot <- grid.grabExpr(genome_plot(dmr_gr = dmr_gr, bm = bm))
+  bottomleft <- grid.grabExpr(dmr_plot(dmr_gr = dmr_gr, meth_data = meth_data, anno_gr = anno_gr, meth_groups = meth_groups, color = gg_color_hue(meth_groups), flanks = NULL, genome_version = "hg19", title = NULL))
+  bottommid <- ggplotGrob(NDlib::transcript_strip_plot(id = dmr_gr$geneid, counts = expr_data, factor_interest = expr_groups, type = "SE", legend = F))
+  bottomright <- ggplotGrob(cor_plot(dmr_se = dmr_se, united_groups = united_groups))
   
-  plot_grid(topplot,
-            bottomleft,
-            bottommid,
-            bottomright,
-            labels = "AUTO", 
-            hjust = 0, 
-            vjust = 1,
-            scale = c(1., 1., 0.9, 0.9)
-            )
+  playout <- rbind(c(1, 1, 1),
+                   c(2, 3, 4))
+
+  grid.arrange(topplot, bottomleft, bottommid, bottomright, layout_matrix = playout)
 }
 
 genome_plot <- function(dmr_gr, bm, flanks = NULL, genome_version = "hg19", title = NULL, ...){
@@ -59,7 +52,7 @@ genome_plot <- function(dmr_gr, bm, flanks = NULL, genome_version = "hg19", titl
   seqlevelsStyle(ensg_gr) <- "UCSC"
   
   plotrange <- range(c(range(dmr_gr), range(ensg_gr)))
-  if(is.null(flanks)) flanks <- width(plotrange)
+  if(is.null(flanks)) flanks <- width(plotrange)/2
   plotrange <- plotrange + flanks
   
   #Preparing the tracks
@@ -69,7 +62,7 @@ genome_plot <- function(dmr_gr, bm, flanks = NULL, genome_version = "hg19", titl
                                     end = end(plotrange), 
                                     chromosome = seqnames(plotrange), 
                                     genome = genome_version,
-                                    biomart = biomart, 
+                                    biomart = bm, 
                                     name = "ENS",
                                     collapseTranscripts = "meta",
                                     transcriptAnnotation = "symbol", 
@@ -91,7 +84,7 @@ genome_plot <- function(dmr_gr, bm, flanks = NULL, genome_version = "hg19", titl
              background.title = "darkgray") 
 }
 
-dmr_plot <- function(dmr_gr, anno_gr, meth_groups, color, flanks = NULL, genome_version = "hg19", title = NULL){
+dmr_plot <- function(dmr_gr, meth_data, anno_gr, meth_groups, color, flanks = NULL, genome_version = "hg19", title = NULL){
   if(is.null(flanks)) flanks <- width(dmr_gr)
   
   plotrange <- range(dmr_gr + flanks)

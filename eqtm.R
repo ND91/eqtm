@@ -66,7 +66,7 @@ eqtm <- function(dmrs_gr, gene_col, meth_data, expr_data, meth_anno_gr, cor_meth
   
   #Permutation
   if(verbose) cat(paste0(Sys.time(), " Calculating the p-values for the correlation coefficient.\n"))
-  dmrs_data <- dmr_permutations(dmrs_se = dmrs_cor, meth_bg = meth_bg, meth_anno_gr = meth_anno_ol, cor_method = cor_method, N = N, ncores = ncores, alternative = alternative, iseed = iseed, verbose = T)
+  dmrs_data <- dmr_permutations(dmrs_se = dmrs_cor, meth_bg = meth_bg, meth_anno_gr = meth_anno_gr, cor_method = cor_method, N = N, ncores = ncores, alternative = alternative, iseed = iseed, verbose = T)
   
   return(dmrs_data)
 }
@@ -148,14 +148,18 @@ dmr_permutations <- function(dmrs_se, meth_bg, meth_anno_gr, cor_method, N, ncor
   
   if(verbose) cat(paste0(Sys.time(), "\tGenerating ", length(unlist(ncpgs_chrom)), " sets of ", N, " background DMRs.\n"))
   ran_dist <- lapply(names(ncpgs_chrom), function(chrom, ncpgs_chrom, meth_bg_split, N){
+    if(verbose) cat(paste0(Sys.time(), "\t\tStarting on ", chrom, ".\n"))
+    
     bg_cpgs_chrom <- meth_bg_split[[chrom]]
     ncpgs <- ncpgs_chrom[[chrom]]
     
     null_chrom <- lapply(ncpgs, function(ncpg, bg_cpgs_chrom, N){
+      #if(verbose) cat(paste0(Sys.time(), "\t\t\tRandom DMRs of length ", ncpg, ".\n"))
+      
       eff_bg <- nrow(bg_cpgs_chrom)-ncpg
       
       #The -1 is to offset the total such that the actual correlation can still be included. A p-value cannot be 0.
-      start_nulls <- sample(x = eff_bg, size = N-1)
+      start_nulls <- sample(x = eff_bg, size = N-1, replace = T)
       
       null_agg <- t(sapply(start_nulls, function(start_null, ncpg, bg_cpgs_chrom){
         end_null <- start_null+ncpg-1
@@ -176,8 +180,8 @@ dmr_permutations <- function(dmrs_se, meth_bg, meth_anno_gr, cor_method, N, ncor
   
   nd_generator <- function(iterator, dmrs_chrom_df, randmrs_chrom_df, expr_data, cor_method, alternative){
     #Helper function to correlate the gene expression with the randomly generated DMRs methylation and calculate the p-value
-    ncpgs <- dmrs_chrom_df$nCpGs[iterator]
-    geneid <- dmrs_chrom_df$geneid[iterator]
+    ncpgs <- as.numeric(dmrs_chrom_df$nCpGs[iterator])
+    geneid <- as.character(dmrs_chrom_df$geneid[iterator])
     permuted <- randmrs_chrom_df[[as.character(ncpgs)]]
     
     null_dist <- apply(X = permuted, MARGIN = 1, FUN = function(meth_data, expr_data, cor_method){
@@ -197,27 +201,33 @@ dmr_permutations <- function(dmrs_se, meth_bg, meth_anno_gr, cor_method, N, ncor
   
   dmrs_chrom <- foreach(i = 1:length(dmrs_split), .combine = "rbind") %do% {
     chrom <- names(dmrs_split)[i]
+    if(verbose) cat(paste0(Sys.time(), "\t\tStarting on ", chrom, ".\n"))
     
     dmrs_chrom_df <- data.frame(dmrs_split[[chrom]], stringsAsFactors = F)
     randmrs_chrom_df <- ran_dist[[as.character(chrom)]]
     expr_data <- assays(dmrs_se)$expr
     
-    if(ncores == 1){
+    #I initially implemented a parallelized implementation of this function, however, empirical evidence suggests that the overhead caused by feeding the cluster the necessary variables makes it much slower than a singlecore implementation. This will thus be the default for now.
+    # if(ncores == 1){
       if(!is.null(iseed)) set.seed(iseed)
-      pvals_chrom <- foreach(j = 1:nrow(dmrs_chrom_df), .combine = "c") %do% {
-        nd_generator(iterator = j, dmrs_chrom_df = dmrs_chrom_df, expr_data = expr_data, randmrs_chrom_df = randmrs_chrom_df, cor_method = cor_method)
-      }
-    } else{
-      cl <- makeCluster(ncores)
-      if(!is.null(iseed)) clusterSetRNGStream(cl = cl, iseed = iseed)
-      clusterExport(cl = cl, varlist = list("nd_generator", "dmrs_chrom_df", "expr_data", "randmrs_chrom_df", "cor_method", "alternative"), envir = environment())
-      registerDoParallel(cl)
-      
-      pvals_chrom <- foreach(j = 1:nrow(dmrs_chrom_df), .combine = "c") %dopar% {
+      pvals_chrom <- foreach::foreach(j = 1:nrow(dmrs_chrom_df), .combine = c) %do% {
         nd_generator(iterator = j, dmrs_chrom_df = dmrs_chrom_df, expr_data = expr_data, randmrs_chrom_df = randmrs_chrom_df, cor_method = cor_method, alternative = alternative)
       }
-      stopCluster(cl)
-    }
+    # } else{
+    #   cl <- makeCluster(ncores)
+    #   if(!is.null(iseed)) clusterSetRNGStream(cl = cl, iseed = iseed)
+    #   clusterExport(cl = cl,
+    #                 varlist = list("nd_generator", "dmrs_chrom_df", "expr_data", "randmrs_chrom_df", "cor_method", "alternative"),
+    #                 envir = environment())
+    #   doParallel::registerDoParallel(cl)
+    #   
+    #   #For some strange reason, the nd_generator fails and the loop continues, clogging up the RAM
+    #   tryCatch(expr = pvals_chrom <- foreach::foreach(j = 1:nrow(dmrs_chrom_df), .combine = c) %dopar% {
+    #     nd_generator(iterator = j, dmrs_chrom_df = dmrs_chrom_df, expr_data = expr_data, randmrs_chrom_df = randmrs_chrom_df, cor_method = cor_method, alternative = alternative)
+    #   },finally = parallel::stopCluster(cl)
+    #   )
+    #   parallel::stopCluster(cl)
+    # }
     dmrs_chrom_df$pvals <- pvals_chrom
     return(dmrs_chrom_df)
   }
