@@ -26,15 +26,42 @@ plot_eqtm <- function(dmrs_se, meth_data, meth_groups, anno_gr, expr_data, expr_
   dmr_se <- dmrs_se[which(mcols(dmrs_se)$index == index),]
   dmr_gr <- rowRanges(dmr_se)
   
-  topplot <- grid.grabExpr(genome_plot(dmr_gr = dmr_gr, bm = bm))
-  bottomleft <- grid.grabExpr(dmr_plot(dmr_gr = dmr_gr, meth_data = meth_data, anno_gr = anno_gr, meth_groups = meth_groups, color = gg_color_hue(meth_groups), flanks = NULL, genome_version = "hg19", title = NULL))
-  bottommid <- ggplotGrob(NDlib::transcript_strip_plot(id = dmr_gr$geneid, counts = expr_data, factor_interest = expr_groups, type = "SE", legend = F))
-  bottomright <- ggplotGrob(cor_plot(dmr_se = dmr_se, united_groups = united_groups))
+  topplot <- grid.grabExpr(genome_plot(dmr_gr = dmr_gr, 
+                                       bm = bm))
+  bottomleft <- ggplotGrob(dmr_plot(dmr_gr = dmr_gr, 
+                                    meth_data = meth_data, 
+                                    anno_gr = anno_gr, 
+                                    meth_groups = meth_groups, 
+                                    flanks = NULL, 
+                                    title = NULL))
   
-  playout <- rbind(c(1, 1, 1),
-                   c(2, 3, 4))
+  bottom_mid_gplot <- NDlib::transcript_strip_plot(id = as.character(dmr_gr$geneid), 
+                                                   counts = expr_data, 
+                                                   factor_interest = expr_groups, 
+                                                   type = "SE", 
+                                                   legend = T, 
+                                                   title = as.character(dmr_gr$Symbol), 
+                                                   y_lab = "Expr") +
+    labs(title = "Expression",
+         subtitle = paste0(as.character(dmr_gr$Symbol), " (", as.character(dmr_gr$geneid), ")"))
+  
+  g_legend<-function(gplot_obj){
+    tmp <- ggplot_gtable(ggplot_build(gplot_obj))
+    leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box")
+    legend <- tmp$grobs[[leg]]
+    legend
+  }
+  
+  legend <- g_legend(bottom_mid_gplot)
+  
+  bottommid <- ggplotGrob(bottom_mid_gplot + theme(legend.position = "none"))
+  bottomright <- ggplotGrob(cor_plot(dmr_se = dmr_se, 
+                                     united_groups = united_groups))
+  
+  playout <- rbind(c(1, 1, 1, 1),
+                   c(2, 3, 4, 5))
 
-  grid.arrange(topplot, bottomleft, bottommid, bottomright, layout_matrix = playout)
+  grid.arrange(topplot, legend, bottomleft, bottommid, bottomright, layout_matrix = playout, widths = c(0.4, 1.2, 1.2, 1.2))
 }
 
 genome_plot <- function(dmr_gr, bm, flanks = NULL, genome_version = "hg19", title = NULL, ...){
@@ -84,58 +111,70 @@ genome_plot <- function(dmr_gr, bm, flanks = NULL, genome_version = "hg19", titl
              background.title = "darkgray") 
 }
 
-dmr_plot <- function(dmr_gr, meth_data, anno_gr, meth_groups, color, flanks = NULL, genome_version = "hg19", title = NULL){
-  if(is.null(flanks)) flanks <- width(dmr_gr)
+dmr_plot <- function(dmr_gr, meth_data, anno_gr, meth_groups, color, flanks = NULL, title = NULL){
+  if(is.null(flanks)) flanks <- width(dmr_gr)/2
   
   plotrange <- range(dmr_gr + flanks)
   
-  cg_ids <- subsetByOverlaps(x = anno_gr, ranges = dmr_gr)
-  meth_gr <- GRanges(seqnames = seqnames(cg_ids), ranges = ranges(cg_ids)) 
-  mcols(meth_gr) <- meth_data[names(cg_ids),]
+  cg_ids <- queryHits(findOverlaps(query = anno_gr, subject = dmr_gr))
+  cg_ids <- c(min(cg_ids)-1, cg_ids, max(cg_ids)+1)
+  anno_sub <- anno_gr[cg_ids,]
   
-  #Preparing the tracks
-  methtrack <- DataTrack(range = meth_gr, 
-                         groups = meth_groups, 
-                         genome = genome_version, 
-                         name = "% Methylation", 
-                         type = c("a", "p"),
-                         ylim = c(0,1),
-                         lty = sort(as.numeric(as.factor(levels(meth_groups)))),
-                         #col = color,
-                         cexp = 0.7,
-                         fontsize = 10,
-                         fontsize = 14)
+  meth_df <- data.frame(pos = start(anno_sub), 
+                        meth_data[names(anno_sub),])
   
-  #Plotting the tracks
-  plotTracks(methtrack, 
-             chromosome = as.character(seqnames(plotrange)), 
-             from = start(plotrange), 
-             to = end(plotrange),
-             cex.title = 1.5,
-             cex.axis = 1.5,
-             fontcolor = "black",
-             background.title = "darkgray") 
+  meth_df_melt <- melt(meth_df, id = "pos")
+  meth_df_melt$Group <- rep(meth_groups, each = length(cg_ids))
   
-  
+  ggplot(meth_df_melt, aes(x = pos, y = value, col = Group, group = Group)) +
+    geom_point() +
+    stat_summary(fun.y=mean, geom="smooth") +
+    coord_cartesian(xlim = c(start(plotrange), end(plotrange))) +
+    ylim(0,1) +
+    ylab("Beta") +
+    labs(title = "Methylation",
+         subtitle = as.character(dmr_gr)) +
+    theme_bw() +
+    theme(plot.title = element_text(face = "bold"),
+          axis.title = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.text = element_text(size = 12), 
+          axis.text.x = element_text(angle = 45, hjust = 1),
+          legend.title = element_text(size = 14, face = "bold"),
+          legend.text = element_text(size = 12),
+          legend.position = "none")
 }
 
 cor_plot <- function(dmr_se, united_groups){
+  
+  subtext <- paste0("r = ", 
+                    round(rowRanges(dmr_se)$cor_coef, 2), 
+                    " [", 
+                    round(rowRanges(dmr_se)$CI95_lower, 2), 
+                    ", ", 
+                    round(rowRanges(dmr_se)$CI95_upper, 2),
+                    "]; p-value = ",
+                    rowRanges(dmr_se)$pval)
+  
+  
   plot_df <- data.frame(expr = as.vector(assays(dmr_se)$expr),
                         meth = as.vector(assays(dmr_se)$meth_summarized),
-                        Groups = united_groups)
+                        Group = united_groups)
   plot_obj <- ggplot(plot_df, aes(x = expr, y = meth)) +
-    geom_point(aes(fill = Groups), color = "black", shape = 21, size = 5) +
+    geom_point(aes(fill = Group), color = "black", shape = 21, size = 5) +
     geom_smooth(method = 'lm', formula = y ~ x, se = F) +
     theme_bw() +
     ylim(0, 1) +
-    xlab("Log expression") +
-    ylab("% methylation") +
+    xlab("Expr") +
+    ylab("Meth") +
+    labs(title = "Correlation",
+         subtitle = subtext) +
     theme(plot.title = element_text(face = "bold"),
           axis.title = element_text(size = 14, face = "bold"),
           axis.text = element_text(size = 12), 
           legend.title = element_text(size = 14, face = "bold"),
           legend.text = element_text(size = 12),
-          legend.position = "bottom")
+          legend.position = "none")
 }
 
 gg_color_hue <- function(factor_interest) {
