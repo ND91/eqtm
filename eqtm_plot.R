@@ -28,14 +28,14 @@ plot_eqtm <- function(dmrs_se, meth_data, meth_groups, anno_gr, expr_data, expr_
   
   topplot <- grid.grabExpr(genome_plot(dmr_gr = dmr_gr, 
                                        bm = bm))
-  bottomleft <- ggplotGrob(dmr_plot(dmr_gr = dmr_gr, 
+  meth_plot <- dmr_plot(dmr_gr = dmr_gr, 
                                     meth_data = meth_data, 
                                     anno_gr = anno_gr, 
                                     meth_groups = meth_groups, 
                                     flanks = NULL, 
-                                    title = NULL))
+                                    title = NULL)
   
-  bottom_mid_gplot <- NDlib::transcript_strip_plot(id = as.character(dmr_gr$geneid), 
+  expr_plot <- NDlib::transcript_strip_plot(id = as.character(dmr_gr$geneid), 
                                                    counts = expr_data, 
                                                    factor_interest = expr_groups, 
                                                    type = "SE", 
@@ -45,23 +45,12 @@ plot_eqtm <- function(dmrs_se, meth_data, meth_groups, anno_gr, expr_data, expr_
     labs(title = "Expression",
          subtitle = paste0(as.character(dmr_gr$Symbol), " (", as.character(dmr_gr$geneid), ")"))
   
-  g_legend<-function(gplot_obj){
-    tmp <- ggplot_gtable(ggplot_build(gplot_obj))
-    leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box")
-    legend <- tmp$grobs[[leg]]
-    legend
-  }
+  correl_plot <- cor_plot(dmr_se = dmr_se, 
+                          united_groups = united_groups)
   
-  legend <- g_legend(bottom_mid_gplot)
+  bottomplots <- ggplotGrob(ggarrange(meth_plot, expr_plot, correl_plot, nrow = 1, ncol = 3, common.legend = T, align = "hv"))
   
-  bottommid <- ggplotGrob(bottom_mid_gplot + theme(legend.position = "none"))
-  bottomright <- ggplotGrob(cor_plot(dmr_se = dmr_se, 
-                                     united_groups = united_groups))
-  
-  playout <- rbind(c(1, 1, 1, 1),
-                   c(2, 3, 4, 5))
-
-  grid.arrange(topplot, legend, bottomleft, bottommid, bottomright, layout_matrix = playout, widths = c(0.4, 1.2, 1.2, 1.2))
+  grid.arrange(topplot, bottomplots, nrow = 2, heights = c(0.75, 1.25))
 }
 
 genome_plot <- function(dmr_gr, bm, flanks = NULL, genome_version = "hg19", title = NULL, ...){
@@ -105,8 +94,8 @@ genome_plot <- function(dmr_gr, bm, flanks = NULL, genome_version = "hg19", titl
              chromosome = as.character(seqnames(plotrange)), 
              from = start(plotrange), 
              to = end(plotrange),
-             cex.title = 1.5,
-             cex.axis = 1.5,
+             # cex.title = 1.5,
+             # cex.axis = 1.5,
              fontcolor = "black",
              background.title = "darkgray") 
 }
